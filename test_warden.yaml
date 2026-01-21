@@ -1,0 +1,20 @@
+# Test Warden Configuration for Sample Tests
+test_warden:
+  test_command: "pytest tests/sample_e2e/ -v"
+  
+  discovery:
+    paths:
+      - tests/sample_e2e
+    patterns:
+      - "test_*.py"
+  
+  healing:
+    mode: suggest
+    confidence_threshold: 0.8
+  
+  gemini:
+    model: gemini-2.0-flash
+    vision_enabled: true
+  
+  langfuse:
+    enabled: true

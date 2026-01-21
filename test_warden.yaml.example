@@ -1,0 +1,43 @@
+# Test Warden Configuration
+test_warden:
+  # Test command to run your tests
+  test_command: "pytest"
+  
+  # Baseline storage location
+  baseline_storage: .test_warden/baselines
+  
+  # Test discovery
+  discovery:
+    paths:
+      - tests/e2e
+      - tests/selenium
+    patterns:
+      - "test_*.py"
+      - "*.spec.js"
+  
+  # Healing behavior
+  healing:
+    mode: suggest  # or 'auto-heal'
+    confidence_threshold: 0.85
+    max_retries: 3
+  
+  # Gemini AI configuration
+  gemini:
+    model: gemini-2.0-flash
+    vision_enabled: true
+  
+  # Langfuse observability (optional)
+  langfuse:
+    enabled: false
+    # public_key: ${LANGFUSE_PUBLIC_KEY}
+    # secret_key: ${LANGFUSE_SECRET_KEY}
+  
+  # Integrations
+  integrations:
+    github:
+      create_pr: true
+      labels:
+        - test-warden
+        - auto-heal
+    slack:
+      channel: null  # Set to "#qa-alerts" to enable
