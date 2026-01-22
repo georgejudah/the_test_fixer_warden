@@ -1,0 +1,25 @@
+{
+  "name": "the_test_warden",
+  "version": "1.0.0",
+  "description": "AI-powered auto-healing for Selenium/Playwright test suites.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/georgejudah/the_test_fixer_warden.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/georgejudah/the_test_fixer_warden/issues"
+  },
+  "homepage": "https://github.com/georgejudah/the_test_fixer_warden#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^25.0.10"
+  }
+}

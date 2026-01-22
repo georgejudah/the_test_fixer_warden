@@ -170,6 +170,243 @@ def baseline(suite: str, config_path: str | None) -> None:
     console.print("[dim]Note: Full baseline capture requires test framework integration[/]\n")
 
 
+@main.command("heal-playwright")
+@click.option("--results-dir", "-r", default="test-results", help="Path to Playwright test-results directory")
+@click.option("--test-dir", "-t", default="e2e", help="Path to e2e test directory")
+@click.option("--dry-run", is_flag=True, default=True, help="Preview changes without modifying files")
+@click.option("--apply", "apply_fixes", is_flag=True, help="Apply fixes to test files")
+@click.option("--use-ai", is_flag=True, help="Use Gemini AI for intelligent analysis")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output during analysis")
+@click.pass_context
+def heal_playwright(
+    ctx: click.Context,
+    results_dir: str,
+    test_dir: str,
+    dry_run: bool,
+    apply_fixes: bool,
+    use_ai: bool,
+    verbose: bool,
+) -> None:
+    """Heal broken Playwright tests using captured aria snapshots."""
+    from .capture.playwright_capture import PlaywrightCapture, parse_aria_snapshot
+    
+    if apply_fixes:
+        dry_run = False
+    
+    config = ctx.obj.get("config")
+    results_path = Path(results_dir)
+    test_path = Path(test_dir)
+    
+    mode = "dry-run" if dry_run else "apply"
+    console.print(f"\n[bold blue]🔧 Healing Playwright tests[/]")
+    console.print(f"[dim]Results: {results_path} | Tests: {test_path} | Mode: {mode}[/]")
+    if verbose:
+        console.print("[dim]Verbose mode: ON[/]")
+    console.print()
+    
+    if not results_path.exists():
+        console.print("[red]Error: test-results directory not found. Run tests first.[/]")
+        return
+    
+    # Get failures from test results
+    capture = PlaywrightCapture(results_path)
+    failures = capture.get_failures()
+    
+    if not failures:
+        console.print("[green]✓ No failures found in test-results![/]\n")
+        return
+    
+    console.print(f"[yellow]Found {len(failures)} failed tests[/]\n")
+    
+    if verbose:
+        console.print("[bold]─" * 50 + "[/]")
+        console.print("[bold cyan]TRIAGING FAILURES[/]")
+        console.print("[bold]─" * 50 + "[/]\n")
+    
+    # Collect all fixes
+    all_fixes = []
+    
+    for i, failure in enumerate(failures, 1):
+        console.print(f"[cyan]📋 [{i}/{len(failures)}] {failure.test_name}[/]")
+        
+        if verbose:
+            console.print(f"  [dim]Test file: {failure.test_file}[/]")
+            if failure.screenshot_path:
+                console.print(f"  [dim]Screenshot: {failure.screenshot_path}[/]")
+        
+        # Parse aria snapshot to find available elements
+        elements = parse_aria_snapshot(failure.aria_snapshot)
+        
+        if verbose:
+            console.print(f"\n  [bold]Aria Snapshot Analysis:[/]")
+            console.print(f"    Buttons:   {elements.get('buttons', [])}") 
+            console.print(f"    Textboxes: {elements.get('textboxes', [])}")
+            console.print(f"    Links:     {elements.get('links', [])}")
+            console.print(f"    Headings:  {elements.get('headings', [])}")
+        else:
+            if elements:
+                console.print(f"  [dim]Found: {len(elements.get('buttons', []))} buttons, "
+                             f"{len(elements.get('textboxes', []))} textboxes, "
+                             f"{len(elements.get('links', []))} links[/]")
+        
+        # Get test file content to find broken selectors
+        test_file = test_path / Path(failure.test_file).name
+        if test_file.exists():
+            content = test_file.read_text()
+            
+            # Find data-testid selectors in the test file
+            import re
+            selectors = re.findall(r'\[data-testid="([^"]+)"\]', content)
+            
+            if verbose:
+                console.print(f"\n  [bold]Selector Analysis:[/]")
+                console.print(f"    Found {len(set(selectors))} unique data-testid selectors in test file")
+            
+            # Use AI if requested
+            if use_ai:
+                from .healing.gemini_playwright_healer import heal_with_gemini
+                
+                if verbose:
+                    console.print(f"\n  [bold magenta]🤖 Using Gemini AI for healing[/]")
+                
+                # Get unique selectors that we haven't fixed yet
+                unfixed_selectors = [s for s in set(selectors) if f'[data-testid="{s}"]' not in [f.get("old") for f in all_fixes]]
+                
+                for selector in unfixed_selectors:
+                    full_selector = f'[data-testid="{selector}"]'
+                    
+                    if verbose:
+                        console.print(f"\n    [dim]Analyzing: {full_selector}[/]")
+                    
+                    # Call Gemini (sync wrapper)
+                    suggestion = heal_with_gemini(
+                        broken_selector=full_selector,
+                        aria_snapshot=failure.aria_snapshot,
+                        screenshot_path=failure.screenshot_path,
+                        model=config.gemini.model if config else "gemini-2.0-flash",
+                        verbose=verbose,
+                    )
+                    
+                    if suggestion.found and suggestion.confidence >= 0.7:
+                        fix = {
+                            "file": str(test_file),
+                            "old": full_selector,
+                            "new": suggestion.new_selector,
+                            "reason": suggestion.reasoning,
+                            "confidence": suggestion.confidence,
+                        }
+                        if fix["old"] not in [f.get("old") for f in all_fixes]:
+                            all_fixes.append(fix)
+                            if verbose:
+                                console.print(f"    [bold green]✓ AI FIX FOUND (confidence: {suggestion.confidence:.0%})[/]")
+                                console.print(f"      Reasoning: {suggestion.reasoning[:100]}...")
+                                console.print(f"      [red]Old: {fix['old']}[/]")
+                                console.print(f"      [green]New: {fix['new']}[/]")
+                            else:
+                                console.print(f"  [magenta]🤖[/] [red]- {fix['old']}[/]")
+                                console.print(f"     [green]+ {fix['new']}[/] [dim]({suggestion.confidence:.0%})[/]")
+                    elif verbose:
+                        console.print(f"    [dim]✗ AI could not find match (confidence: {suggestion.confidence:.0%})[/]")
+                        if suggestion.reasoning:
+                            console.print(f"      {suggestion.reasoning[:80]}...")
+            else:
+                # Heuristic-based matching
+                for selector in set(selectors):
+                    selector_lower = selector.lower()
+                    new_selector = None
+                    match_reason = ""
+                    
+                    # Try to match broken selector to an aria element
+                    if "email" in selector_lower and elements.get("textboxes"):
+                        for tb in elements["textboxes"]:
+                            if "email" in tb.lower():
+                                new_selector = f"page.getByLabel('{tb}')"
+                                match_reason = f"'email' keyword matched textbox '{tb}'"
+                                break
+                    
+                    elif "password" in selector_lower and elements.get("textboxes"):
+                        for tb in elements["textboxes"]:
+                            if "password" in tb.lower():
+                                new_selector = f"page.getByLabel('{tb}')"
+                                match_reason = f"'password' keyword matched textbox '{tb}'"
+                                break
+                    
+                    elif ("submit" in selector_lower or "login" in selector_lower) and elements.get("buttons"):
+                        for btn in elements["buttons"]:
+                            if "sign" in btn.lower() or "login" in btn.lower():
+                                new_selector = f"page.getByRole('button', {{ name: '{btn}' }})"
+                                match_reason = f"'submit/login' keyword matched button '{btn}'"
+                                break
+                    
+                    elif "forgot" in selector_lower and elements.get("links"):
+                        for link in elements["links"]:
+                            if "forgot" in link.lower():
+                                new_selector = f"page.getByRole('link', {{ name: '{link}' }})"
+                                match_reason = f"'forgot' keyword matched link '{link}'"
+                                break
+                    
+                    elif ("checkout" in selector_lower or "cart" in selector_lower or "continue" in selector_lower) and elements.get("buttons"):
+                        # For cart-related buttons, use aria
+                        if verbose:
+                            console.print(f"    [yellow]⚠ Selector '{selector}' - cart-related, needs more context[/]")
+                    
+                    if new_selector:
+                        fix = {
+                            "file": str(test_file),
+                            "old": f'[data-testid="{selector}"]',
+                            "new": new_selector,
+                        }
+                        if fix not in all_fixes:
+                            all_fixes.append(fix)
+                            if verbose:
+                                console.print(f"\n    [bold green]✓ FIX FOUND[/]")
+                                console.print(f"      Reason: {match_reason}")
+                                console.print(f"      [red]Old: {fix['old']}[/]")
+                                console.print(f"      [green]New: {fix['new']}[/]")
+                            else:
+                                console.print(f"  [red]- {fix['old']}[/]")
+                                console.print(f"  [green]+ {fix['new']}[/]")
+                    elif verbose and selector:
+                        console.print(f"    [dim]✗ No match for '{selector}'[/]")
+        
+        if verbose:
+            console.print()
+    
+    console.print()
+    
+    if verbose:
+        console.print("[bold]─" * 50 + "[/]")
+        console.print("[bold cyan]SUMMARY[/]")
+        console.print("[bold]─" * 50 + "[/]\n")
+    
+    if all_fixes:
+        console.print(f"[bold]Found {len(all_fixes)} fixes[/]\n")
+        
+        if verbose:
+            console.print("[bold]All fixes:[/]")
+            for i, fix in enumerate(all_fixes, 1):
+                console.print(f"  {i}. [red]{fix['old']}[/]")
+                console.print(f"     → [green]{fix['new']}[/]")
+            console.print()
+        
+        if dry_run:
+            console.print("[dim]Run with --apply to modify test files[/]\n")
+        else:
+            # Apply fixes
+            for fix in all_fixes:
+                file_path = Path(fix["file"])
+                content = file_path.read_text()
+                content = content.replace(fix["old"], fix["new"])
+                file_path.write_text(content)
+                if verbose:
+                    console.print(f"[green]✓ Updated {file_path}[/]")
+            console.print(f"\n[green]✓ Applied {len(all_fixes)} fixes![/]")
+            console.print("[dim]Re-run 'npx playwright test' to verify[/]\n")
+    else:
+        console.print("[yellow]No automatic fixes found[/]")
+        console.print("[dim]The broken selectors may need manual review or AI analysis[/]\n")
+
+
 def _get_suggested_action(failure: TestFailure) -> str:
     """Suggest an action based on failure type."""
     from .models import FailureType
